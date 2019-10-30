@@ -1,0 +1,264 @@
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
+#define ONE_WIRE_BUS_PIN 8                        //bus signals on pin 8
+
+int8_t answer;
+int onModulePin = 2;                              //3G Device power pin
+char aux_str[30];
+
+int sum = 0;                                      // sum of samples taken
+unsigned char sample_count = 0;                   // current sample number
+#define NUM_SAMPLES 10
+float battery = 0.0;                              // calculated battery voltage
+
+const char phone_number[] = "xxxxxxxxx";
+
+/* Setup a oneWire instance to communicate with any OneWire devices */
+OneWire oneWire(ONE_WIRE_BUS_PIN);
+
+/* Pass the oneWire reference to Dallas Temperature */
+DallasTemperature sensors(&oneWire);
+
+/* Assign the addresses of 1-Wire temp sensors */
+DeviceAddress Probe01 = { 0x28, 0x76, 0x66, 0xF2, 0x06, 0x00, 0x00, 0x1E };
+DeviceAddress Probe02 = { 0x28, 0xE0, 0x36, 0x01, 0x08, 0x00, 0x00, 0x85 };
+
+void setup()
+{
+  pinMode(onModulePin, OUTPUT);
+
+  pinMode(battery, INPUT);
+
+  Serial.begin(115200);
+
+  Serial.println("Starting...");
+  power_on();
+
+  delay(3000);
+
+  //sets the PIN code
+  //sprintf(aux_str, "AT+CPIN=%s", pin);
+  //sendATcommand(aux_str, "OK", 2000);
+
+  /* Enable/disable noise suppression */
+  sendATcommand("AT+CNSM=0", "OK", 2000);
+
+  /* Enables the use of command ATA.  Answering a call */
+  sendATcommand("ATA=0", "OK", 10000);
+
+  /* Enables the use of  Headset Channel.  Uses the jack connector */
+  sendATcommand("AT+CSDVC=2", "OK", 10000);
+
+  delay(3000);
+
+  Serial.println("Connecting to the network...");
+
+  while ( (sendATcommand("AT+CREG?", "+CREG: 0,1", 500) ||
+           sendATcommand("AT+CREG?", "+CREG: 0,5", 500)) == 0 );
+}
+
+void loop() {
+
+  answer = sendATcommand("", "RING", 1000);
+
+  if (answer == 1)
+  {
+    Serial.println("Incoming call");
+    delay(500);
+
+    sensors.begin();
+
+    /* Set the resolution to 10 bit (Can be 9 to 12 bits .. lower is faster) */
+    sensors.setResolution(Probe01, 10);
+    sensors.setResolution(Probe02, 10);
+
+    sensors.requestTemperatures();
+    delay(500);
+
+    getData();
+
+    delay(5000);
+
+    Serial.println("ATA"); // Answer the incoming call
+    Serial.println("Call Connected"); // Answer the incoming call
+  }
+}
+
+void power_on() {
+
+  uint8_t answer = 0;
+
+  // checks if the module is started
+  answer = sendATcommand("AT", "OK", 2000);
+  if (answer == 0)
+  {
+    // power on pulse
+    digitalWrite(onModulePin, HIGH);
+    delay(3000);
+    digitalWrite(onModulePin, LOW);
+
+    // waits for an answer from the module
+    while (answer == 0) {   // Send AT every two seconds and wait for the answer
+      answer = sendATcommand("AT", "OK", 2000);
+    }
+  }
+}
+
+int8_t sendATcommand(char* ATcommand, char* expected_answer, unsigned int timeout)
+{
+  uint8_t x = 0,  answer = 0;
+  char response[100];
+  unsigned long previous;
+
+  memset(response, '\0', 100);    // Initialize the string
+
+  delay(100);
+
+  while ( Serial.available() > 0) Serial.read();   // Clean the input buffer
+
+  Serial.println(ATcommand);    // Send the AT command
+
+
+  x = 0;
+  previous = millis();
+
+  /* this loop waits for the answer */
+  do
+  {
+    /* if there are data in the UART input buffer, reads it and checks for the answer */
+    if (Serial.available() != 0)
+    {
+      response[x] = Serial.read();
+      x++;
+
+      /* check if the desired answer  is in the response of the module */
+      if (strstr(response, expected_answer) != NULL)
+      {
+        answer = 1;
+      }
+    }
+  }
+  /* Waits for the answer with time out */
+  while ((answer == 0) && ((millis() - previous) < timeout));
+
+  return answer;
+}
+
+void getData()
+{
+  Serial.println("The sensor is reading the temperature...");
+
+  delay(3000);
+
+  Serial.println();
+
+  float temp1 = getTemp(Probe01);
+  Serial.println(temp1);
+  float temp2 = getTemp(Probe02);
+  Serial.println(temp2);
+  float battery = getVoltage();
+  Serial.println(battery);
+
+  delay(1000);
+
+  char sms_text1[] = "The air temperature is: ";
+  char sms_text2[] = "Cels. The water temperature is: ";
+  char sms_text3[] = "Cels. The battery voltage is: ";
+  char sms_voltageSymbol[] = "V";
+
+  char sms_temp1[] = "";
+  char sms_temp2[] = "";
+  char sms_battery[] = "";
+
+  char sms_one[100] = "";
+  char sms_two[100] = "";
+  char sms_three[100] = "";
+
+  char sms_text[300] = {0};
+
+  dtostrf(temp1, 4, 2, sms_temp1);
+  strcat(sms_one, sms_text1);
+  strcat(sms_one, sms_temp1);
+
+  dtostrf(temp2, 4, 2, sms_temp2);
+  strcat(sms_two, sms_text2);
+  strcat(sms_two, sms_temp2);
+
+  dtostrf(battery, 4, 2, sms_battery);
+  strcat(sms_three, sms_text3);
+  strcat(sms_three, sms_battery);
+  strcat(sms_three, sms_voltageSymbol);
+
+  strcat(sms_text, sms_one);
+  strcat(sms_text, sms_two);
+  strcat(sms_text, sms_three);
+
+  Serial.print("Setting SMS mode...");
+  sendATcommand("AT+CMGF=1", "OK", 1000);        // sets the SMS mode to text
+  Serial.print("Sending SMS");
+
+  sprintf(aux_str, "AT+CMGS=\"%s\"", phone_number);
+  answer = sendATcommand(aux_str, ">", 2000);    // send the SMS number
+
+  if (answer == 1)
+  {
+    Serial.println(sms_text);
+    Serial.write(0x1A);
+    answer = sendATcommand("", "OK", 20000);
+
+    if (answer == 1)
+    {
+      Serial.println("Sent ");
+    }
+    else
+    {
+      Serial.println("error ");
+    }
+  }
+
+  else
+  {
+    Serial.println("error ");
+    Serial.println(answer, DEC);
+  }
+}
+
+float getTemp(DeviceAddress deviceAddress)
+{
+  float temp = sensors.getTempC(deviceAddress);
+
+  if (temp == -127.00)
+  {
+    Serial.println("Error getting temperature  ");
+  }
+
+  return temp;
+}
+
+float getVoltage()
+{
+  float voltage;
+
+  // take a number of analog samples and add them up
+  while (sample_count < NUM_SAMPLES) {
+    sum += analogRead(A2);
+    sample_count++;
+    delay(10);
+  }
+
+  //using R1=1kohm and R2=3.27kohm
+  //calculate the voltage
+  //use 5.0 for a 5.0V ADC reference voltage
+  //5.015V is the calibrated reference voltage
+  voltage = ((float)sum / (float)NUM_SAMPLES * 5.015) / 1024.0;
+
+  float batteryReading = voltage * 1.30434;
+
+  sample_count = 0;
+  sum = 0;
+
+  return batteryReading;
+}
+
+
